@@ -1,547 +1,497 @@
 <?php
+
 namespace MTai\IBlockProperty;
 
-use Bitrix\Iblock,
-    CAdminList,
-    CIBlockElement,
-    CIBlockSection,
-    Bitrix\Main\Localization\Loc,
-    Bitrix\Main\Engine\CurrentUser;
+use Bitrix\Iblock;
+use Bitrix\Main\Engine\CurrentUser;
+use Bitrix\Main\Localization\Loc;
+use CAdminList;
+use CIBlockElement;
+use CIBlockSection;
 
 Loc::loadMessages(__FILE__);
 
-/*
- *  Based on \CIBlockPropertyElementList
+/**
+ * Кастомный тип свойства инфоблока «Привязка к элементам по пользователю».
+ *
+ * Выпадающий список элементов связанного инфоблока (как у штатной
+ * «Привязки к элементам»), но список отфильтрован по текущему пользователю:
+ * по полю CREATED_BY связанного инфоблока или по любому другому полю,
+ * указанному в настройках свойства (например PROPERTY_<код свойства>).
+ *
+ * Основан на \CIBlockPropertyElementList; контракт методов — стандартный
+ * для обработчика события OnIBlockPropertyBuildList.
  */
 class EListByUser
 {
-    public static function GetUserTypeDescription():array
-    {
-        return array(
-            'USER_TYPE_ID' => 'elist_by_user',
-            'USER_TYPE' => 'EListByUser',
-            'CLASS_NAME' => __CLASS__,
-            'DESCRIPTION' => 'Привязка к элементам по пользователю',
-            'PROPERTY_TYPE' => Iblock\PropertyTable::TYPE_ELEMENT,
-            "GetPropertyFieldHtml" => array(__CLASS__, "GetPropertyFieldHtml"),
-            "GetPropertyFieldHtmlMulty" => array(__CLASS__, "GetPropertyFieldHtmlMulty"),
-            "GetPublicEditHTML" => array(__CLASS__, "GetPropertyFieldHtml"),
-            "GetPublicEditHTMLMulty" => array(__CLASS__, "GetPropertyFieldHtmlMulty"),
-            "GetPublicViewHTML" => array(__CLASS__,  "GetPublicViewHTML"),
-            "GetUIFilterProperty" => array(__CLASS__, "GetUIFilterProperty"),
-            "GetAdminFilterHTML" => array(__CLASS__, "GetAdminFilterHTML"),
-            "PrepareSettings" =>array(__CLASS__, "PrepareSettings"),
-            "GetSettingsHTML" =>array(__CLASS__, "GetSettingsHTML"),
-            "GetExtendedValue" => array(__CLASS__,  "GetExtendedValue"),
-            'GetUIEntityEditorProperty' => array(__CLASS__, 'GetUIEntityEditorProperty'),
-        );
-    }
+	public const USER_TYPE_ID = 'elist_by_user';
 
-    public static function PrepareSettings($arProperty): array
-    {
-        $size = 0;
-        if(is_array($arProperty["USER_TYPE_SETTINGS"]))
-            $size = intval($arProperty["USER_TYPE_SETTINGS"]["size"]);
-        if($size <= 0)
-            $size = 1;
+	/** Поле связанного инфоблока для фильтрации по пользователю по умолчанию */
+	public const DEFAULT_USER_FIELD = 'CREATED_BY';
 
-        $width = 0;
-        if(is_array($arProperty["USER_TYPE_SETTINGS"]))
-            $width = intval($arProperty["USER_TYPE_SETTINGS"]["width"]);
-        if($width <= 0)
-            $width = 0;
+	public static function GetUserTypeDescription(): array
+	{
+		return [
+			'USER_TYPE_ID' => self::USER_TYPE_ID,
+			'USER_TYPE' => 'EListByUser',
+			'CLASS_NAME' => __CLASS__,
+			'DESCRIPTION' => Loc::getMessage('MTAI_ELIST_BY_USER_DESCRIPTION'),
+			'PROPERTY_TYPE' => Iblock\PropertyTable::TYPE_ELEMENT,
+			'GetPropertyFieldHtml' => [__CLASS__, 'GetPropertyFieldHtml'],
+			'GetPropertyFieldHtmlMulty' => [__CLASS__, 'GetPropertyFieldHtmlMulty'],
+			'GetPublicEditHTML' => [__CLASS__, 'GetPropertyFieldHtml'],
+			'GetPublicEditHTMLMulty' => [__CLASS__, 'GetPropertyFieldHtmlMulty'],
+			'GetPublicViewHTML' => [__CLASS__, 'GetPublicViewHTML'],
+			'GetUIFilterProperty' => [__CLASS__, 'GetUIFilterProperty'],
+			'GetAdminFilterHTML' => [__CLASS__, 'GetAdminFilterHTML'],
+			'PrepareSettings' => [__CLASS__, 'PrepareSettings'],
+			'GetSettingsHTML' => [__CLASS__, 'GetSettingsHTML'],
+			'GetExtendedValue' => [__CLASS__, 'GetExtendedValue'],
+			'GetUIEntityEditorProperty' => [__CLASS__, 'GetUIEntityEditorProperty'],
+		];
+	}
 
-        if(is_array($arProperty["USER_TYPE_SETTINGS"]) && $arProperty["USER_TYPE_SETTINGS"]["group"] === "Y")
-            $group = "Y";
-        else
-            $group = "N";
+	/* Настройки свойства */
 
-        if(is_array($arProperty["USER_TYPE_SETTINGS"]) && $arProperty["USER_TYPE_SETTINGS"]["multiple"] === "Y")
-            $multiple = "Y";
-        else
-            $multiple = "N";
+	public static function PrepareSettings($arProperty): array
+	{
+		$settings = is_array($arProperty['USER_TYPE_SETTINGS'] ?? null) ? $arProperty['USER_TYPE_SETTINGS'] : [];
 
-        return array(
-            "size" =>  $size,
-            "width" => $width,
-            "group" => $group,
-            "multiple" => $multiple,
-            "user_field" => $arProperty["USER_TYPE_SETTINGS"]["user_field"],
-        );
-    }
+		$size = (int)($settings['size'] ?? 0);
+		$width = (int)($settings['width'] ?? 0);
+		$userField = trim((string)($settings['user_field'] ?? ''));
 
-    public static function GetSettingsHTML($arProperty, $strHTMLControlName, &$arPropertyFields): string
-    {
-        $settings = self::PrepareSettings($arProperty);
+		return [
+			'size' => $size > 0 ? $size : 1,
+			'width' => $width > 0 ? $width : 0,
+			'group' => ($settings['group'] ?? 'N') === 'Y' ? 'Y' : 'N',
+			'multiple' => ($settings['multiple'] ?? 'N') === 'Y' ? 'Y' : 'N',
+			'user_field' => $userField !== '' ? $userField : self::DEFAULT_USER_FIELD,
+		];
+	}
 
-        $arPropertyFields = array(
-            "HIDE" => array("ROW_COUNT", "COL_COUNT", "MULTIPLE_CNT"),
-        );
+	public static function GetSettingsHTML($arProperty, $strHTMLControlName, &$arPropertyFields): string
+	{
+		$settings = self::PrepareSettings($arProperty);
+		$name = $strHTMLControlName['NAME'];
 
-        return '
+		$arPropertyFields = [
+			'HIDE' => ['ROW_COUNT', 'COL_COUNT', 'MULTIPLE_CNT'],
+		];
+
+		return '
 		<tr valign="top">
-			<td>'.Loc::getMessage("IBLOCK_PROP_ELEMENT_LIST_SETTING_SIZE").':</td>
-			<td><input type="text" size="5" name="'.$strHTMLControlName["NAME"].'[size]" value="'.$settings["size"].'"></td>
+			<td>' . Loc::getMessage('MTAI_ELIST_BY_USER_SETTING_SIZE') . ':</td>
+			<td><input type="text" size="5" name="' . $name . '[size]" value="' . $settings['size'] . '"></td>
 		</tr>
 		<tr valign="top">
-			<td>'.Loc::getMessage("IBLOCK_PROP_ELEMENT_LIST_SETTING_WIDTH").':</td>
-			<td><input type="text" size="5" name="'.$strHTMLControlName["NAME"].'[width]" value="'.$settings["width"].'">px</td>
+			<td>' . Loc::getMessage('MTAI_ELIST_BY_USER_SETTING_WIDTH') . ':</td>
+			<td><input type="text" size="5" name="' . $name . '[width]" value="' . $settings['width'] . '">px</td>
 		</tr>
 		<tr valign="top">
-			<td>'.Loc::getMessage("IBLOCK_PROP_ELEMENT_LIST_SETTING_SECTION_GROUP").':</td>
-			<td><input type="checkbox" name="'.$strHTMLControlName["NAME"].'[group]" value="Y" '.($settings["group"]=="Y"? 'checked': '').'></td>
+			<td>' . Loc::getMessage('MTAI_ELIST_BY_USER_SETTING_GROUP') . ':</td>
+			<td><input type="checkbox" name="' . $name . '[group]" value="Y"' . ($settings['group'] === 'Y' ? ' checked' : '') . '></td>
 		</tr>
 		<tr valign="top">
-			<td>'.Loc::getMessage("IBLOCK_PROP_ELEMENT_LIST_SETTING_MULTIPLE").':</td>
-			<td><input type="checkbox" name="'.$strHTMLControlName["NAME"].'[multiple]" value="Y" '.($settings["multiple"]=="Y"? 'checked': '').'></td>
+			<td>' . Loc::getMessage('MTAI_ELIST_BY_USER_SETTING_MULTIPLE') . ':</td>
+			<td><input type="checkbox" name="' . $name . '[multiple]" value="Y"' . ($settings['multiple'] === 'Y' ? ' checked' : '') . '></td>
 		</tr>
 		<tr valign="top">
-			<td>'.Loc::getMessage("IBLOCK_PROP_ELEMENT_LIST_SETTING_USER_FIELD").':</td>
-			<td><input type="text" name="'.$strHTMLControlName["NAME"].'[user_field]" value="'.$settings["user_field"].'" ></td>
+			<td>' . Loc::getMessage('MTAI_ELIST_BY_USER_SETTING_USER_FIELD') . ':</td>
+			<td><input type="text" name="' . $name . '[user_field]" value="' . htmlspecialcharsbx($settings['user_field']) . '"></td>
 		</tr>
 		';
-    }
+	}
 
-    public static function GetPropertyFieldHtml($arProperty, $value, $strHTMLControlName): string
-    {
-        $settings = self::PrepareSettings($arProperty);
-        if($settings["size"] > 1)
-            $size = ' size="'.$settings["size"].'"';
-        else
-            $size = '';
+	/* Редактирование значения */
 
-        if($settings["width"] > 0)
-            $width = ' style="width:'.$settings["width"].'px"';
-        else
-            $width = '';
+	public static function GetPropertyFieldHtml($arProperty, $value, $strHTMLControlName): string
+	{
+		$settings = self::PrepareSettings($arProperty);
+		$wasSelected = false;
+		$options = self::GetOptionsHtml($arProperty, [$value['VALUE']], $wasSelected);
 
-        $bWasSelect = false;
-        $options = self::GetOptionsHtml($arProperty, array($value["VALUE"]), $bWasSelect);
+		$html = '<select name="' . $strHTMLControlName['VALUE'] . '"' . self::getSelectAttributes($settings) . '>';
+		if ($arProperty['IS_REQUIRED'] !== 'Y')
+		{
+			$html .= '<option value=""' . (!$wasSelected ? ' selected' : '') . '>'
+				. Loc::getMessage('MTAI_ELIST_BY_USER_NO_VALUE') . '</option>';
+		}
+		$html .= $options . '</select>';
 
-        $html = '<select name="'.$strHTMLControlName["VALUE"].'"'.$size.$width.'>';
-        if($arProperty["IS_REQUIRED"] != "Y")
-            $html .= '<option value=""'.(!$bWasSelect? ' selected': '').'>'.Loc::getMessage("IBLOCK_PROP_ELEMENT_LIST_NO_VALUE").'</option>';
-        $html .= $options;
-        $html .= '</select>';
-        return  $html;
-    }
+		return $html;
+	}
 
-    public static function GetPropertyFieldHtmlMulty($arProperty, $value, $strHTMLControlName): string
-    {
-        $max_n = 0;
-        $values = array();
-        if(is_array($value))
-        {
-            foreach($value as $property_value_id => $arValue)
-            {
-                if (is_array($arValue))
-                    $values[$property_value_id] = $arValue["VALUE"];
-                else
-                    $values[$property_value_id] = $arValue;
+	public static function GetPropertyFieldHtmlMulty($arProperty, $value, $strHTMLControlName): string
+	{
+		$maxN = 0;
+		$values = [];
+		if (is_array($value))
+		{
+			foreach ($value as $propertyValueId => $arValue)
+			{
+				$values[$propertyValueId] = is_array($arValue) ? $arValue['VALUE'] : $arValue;
+				if (preg_match('/^n(\d+)$/', (string)$propertyValueId, $match))
+				{
+					$maxN = max($maxN, (int)$match[1]);
+				}
+			}
+		}
 
-                if(preg_match("/^n(\\d+)$/", $property_value_id, $match))
-                {
-                    if($match[1] > $max_n)
-                        $max_n = intval($match[1]);
-                }
-            }
-        }
+		$settings = self::PrepareSettings($arProperty);
 
-        $settings = self::PrepareSettings($arProperty);
-        if($settings["size"] > 1)
-            $size = ' size="'.$settings["size"].'"';
-        else
-            $size = '';
+		if ($settings['multiple'] === 'Y')
+		{
+			$wasSelected = false;
+			$options = self::GetOptionsHtml($arProperty, $values, $wasSelected);
 
-        if($settings["width"] > 0)
-            $width = ' style="width:'.$settings["width"].'px"';
-        else
-            $width = '';
+			$html = '<input type="hidden" name="' . $strHTMLControlName['VALUE'] . '[]" value="">';
+			$html .= '<select multiple name="' . $strHTMLControlName['VALUE'] . '[]"' . self::getSelectAttributes($settings) . '>';
+			if ($arProperty['IS_REQUIRED'] !== 'Y')
+			{
+				$html .= '<option value=""' . (!$wasSelected ? ' selected' : '') . '>'
+					. Loc::getMessage('MTAI_ELIST_BY_USER_NO_VALUE') . '</option>';
+			}
 
-        if($settings["multiple"]=="Y")
-        {
-            $bWasSelect = false;
-            $options = self::GetOptionsHtml($arProperty, $values, $bWasSelect);
+			return $html . $options . '</select>';
+		}
 
-            $html = '<input type="hidden" name="'.$strHTMLControlName["VALUE"].'[]" value="">';
-            $html .= '<select multiple name="'.$strHTMLControlName["VALUE"].'[]"'.$size.$width.'>';
-            if($arProperty["IS_REQUIRED"] != "Y")
-                $html .= '<option value=""'.(!$bWasSelect? ' selected': '').'>'.Loc::getMessage("IBLOCK_PROP_ELEMENT_LIST_NO_VALUE").'</option>';
-            $html .= $options;
-            $html .= '</select>';
-        }
-        else
-        {
-            if(end($values) != "" || mb_substr(key($values), 0, 1) != "n")
-                $values["n".($max_n+1)] = "";
+		if ((string)end($values) !== '' || mb_substr((string)key($values), 0, 1) !== 'n')
+		{
+			$values['n' . ($maxN + 1)] = '';
+		}
 
-            $name = $strHTMLControlName["VALUE"]."VALUE";
+		$name = $strHTMLControlName['VALUE'] . 'VALUE';
+		$tableId = 'tb' . md5($name);
 
-            $html = '<table cellpadding="0" cellspacing="0" border="0" class="nopadding" width="100%" id="tb'.md5($name).'">';
-            foreach($values as $property_value_id=>$value)
-            {
-                $html .= '<tr><td>';
+		$html = '<table cellpadding="0" cellspacing="0" border="0" class="nopadding" width="100%" id="' . $tableId . '">';
+		foreach ($values as $propertyValueId => $value)
+		{
+			$wasSelected = false;
+			$options = self::GetOptionsHtml($arProperty, [$value], $wasSelected);
 
-                $bWasSelect = false;
-                $options = self::GetOptionsHtml($arProperty, array($value), $bWasSelect);
+			$html .= '<tr><td><select name="' . $strHTMLControlName['VALUE'] . '[' . $propertyValueId . '][VALUE]"'
+				. self::getSelectAttributes($settings) . '>';
+			$html .= '<option value=""' . (!$wasSelected ? ' selected' : '') . '>'
+				. Loc::getMessage('MTAI_ELIST_BY_USER_NO_VALUE') . '</option>';
+			$html .= $options . '</select></td></tr>';
+		}
+		$html .= '</table>';
 
-                $html .= '<select name="'.$strHTMLControlName["VALUE"].'['.$property_value_id.'][VALUE]"'.$size.$width.'>';
-                $html .= '<option value=""'.(!$bWasSelect? ' selected': '').'>'.Loc::getMessage("IBLOCK_PROP_ELEMENT_LIST_NO_VALUE").'</option>';
-                $html .= $options;
-                $html .= '</select>';
+		$html .= '<input type="button" value="' . Loc::getMessage('MTAI_ELIST_BY_USER_ADD')
+			. '" onClick="BX.IBlock.Tools.addNewRow(\'' . $tableId . '\', -1)">';
 
-                $html .= '</td></tr>';
-            }
-            $html .= '</table>';
+		return $html;
+	}
 
-            $html .= '<input type="button" value="'.Loc::getMessage("IBLOCK_PROP_ELEMENT_LIST_ADD").'" onClick="BX.IBlock.Tools.addNewRow(\'tb'.md5($name).'\', -1)">';
-        }
-        return  $html;
-    }
+	/* Фильтры (админ-список и UI-грид) */
 
-    public static function GetAdminFilterHTML($arProperty, $strHTMLControlName): string
-    {
-        $lAdmin = new CAdminList($strHTMLControlName["TABLE_ID"]);
-        $lAdmin->InitFilter(array($strHTMLControlName["VALUE"]));
-        $filterValue = $GLOBALS[$strHTMLControlName["VALUE"]];
+	public static function GetAdminFilterHTML($arProperty, $strHTMLControlName): string
+	{
+		$lAdmin = new CAdminList($strHTMLControlName['TABLE_ID']);
+		$lAdmin->InitFilter([$strHTMLControlName['VALUE']]);
+		$filterValue = $GLOBALS[$strHTMLControlName['VALUE']];
 
-        if(isset($filterValue) && is_array($filterValue))
-            $values = $filterValue;
-        else
-            $values = array();
+		$values = is_array($filterValue) ? $filterValue : [];
 
-        $settings = self::PrepareSettings($arProperty);
-        if($settings["size"] > 1)
-            $size = ' size="'.$settings["size"].'"';
-        else
-            $size = '';
+		$settings = self::PrepareSettings($arProperty);
+		$wasSelected = false;
+		$options = self::GetOptionsHtml($arProperty, $values, $wasSelected);
 
-        if($settings["width"] > 0)
-            $width = ' style="width:'.$settings["width"].'px"';
-        else
-            $width = '';
+		$html = '<select multiple name="' . $strHTMLControlName['VALUE'] . '[]"' . self::getSelectAttributes($settings) . '>';
+		$html .= '<option value=""' . (!$wasSelected ? ' selected' : '') . '>'
+			. Loc::getMessage('MTAI_ELIST_BY_USER_ANY_VALUE') . '</option>';
 
-        $bWasSelect = false;
-        $options = self::GetOptionsHtml($arProperty, $values, $bWasSelect);
+		return $html . $options . '</select>';
+	}
 
-        $html = '<select multiple name="'.$strHTMLControlName["VALUE"].'[]"'.$size.$width.'>';
-        $html .= '<option value=""'.(!$bWasSelect? ' selected': '').'>'.Loc::getMessage("IBLOCK_PROP_ELEMENT_LIST_ANY_VALUE").'</option>';
-        $html .= $options;
-        $html .= '</select>';
-        return  $html;
-    }
+	public static function GetUIFilterProperty($arProperty, $strHTMLControlName, &$fields): void
+	{
+		$fields['type'] = 'list';
+		$fields['items'] = self::getItemsForUiFilter($arProperty);
+		$fields['operators'] = [
+			'default' => '=',
+			'enum' => '@',
+		];
+	}
 
-    public static function GetUIFilterProperty($arProperty, $strHTMLControlName, &$fields): void
-    {
-        $fields["type"] = "list";
-        $fields["items"] = self::getItemsForUiFilter($arProperty);
-        $fields["operators"] = array(
-            "default" => "=",
-            "enum" => "@"
-        );
-    }
+	/* Публичный вывод */
 
-    private static function getItemsForUiFilter($arProperty): array
-    {
-        $items = array();
-        $settings = self::PrepareSettings($arProperty);
+	public static function GetPublicViewHTML($arProperty, $arValue, $strHTMLControlName)
+	{
+		static $cache = [];
 
-        if ($settings["group"] === "Y")
-        {
-            $arElements = self::GetElements($arProperty["LINK_IBLOCK_ID"], $settings);
-            $arTree = self::GetSections($arProperty["LINK_IBLOCK_ID"]);
-            foreach ($arElements as $i => $arElement)
-            {
-                if(
-                    $arElement["IN_SECTIONS"] == "Y"
-                    && array_key_exists($arElement["IBLOCK_SECTION_ID"], $arTree)
-                )
-                {
-                    $arTree[$arElement["IBLOCK_SECTION_ID"]]["E"][] = $arElement;
-                    unset($arElements[$i]);
-                }
-            }
+		$strResult = '';
+		$arValue['VALUE'] = (int)$arValue['VALUE'];
+		if ($arValue['VALUE'] > 0)
+		{
+			$viewMode = '';
+			$resultKey = '';
+			switch ($strHTMLControlName['MODE'] ?? '')
+			{
+				case 'CSV_EXPORT':
+					$viewMode = 'CSV_EXPORT';
+					$resultKey = 'ID';
+					break;
+				case 'EXTERNAL_ID':
+					$viewMode = 'EXTERNAL_ID';
+					$resultKey = '~XML_ID';
+					break;
+				case 'SIMPLE_TEXT':
+				case 'ELEMENT_TEMPLATE':
+					$viewMode = $strHTMLControlName['MODE'];
+					$resultKey = '~NAME';
+					break;
+			}
 
-            foreach ($arTree as $arSection)
-            {
-                if (isset($arSection["E"]))
-                {
-                    foreach ($arSection["E"] as $arItem)
-                    {
-                        $items[$arItem["ID"]] = $arItem["NAME"];
-                    }
-                }
-            }
-            foreach ($arElements as $arItem)
-            {
-                $items[$arItem["ID"]] = $arItem["NAME"];
-            }
+			if (!isset($cache[$arValue['VALUE']]))
+			{
+				$arFilter = [
+					'ID' => $arValue['VALUE'],
+					'CHECK_PERMISSIONS' => 'Y',
+					'MIN_PERMISSION' => 'R',
+				];
+				$intIBlockID = (int)($arProperty['LINK_IBLOCK_ID'] ?? 0);
+				if ($intIBlockID > 0)
+				{
+					$arFilter['IBLOCK_ID'] = $intIBlockID;
+				}
+				if ($viewMode === '')
+				{
+					$arFilter['ACTIVE'] = 'Y';
+					$arFilter['ACTIVE_DATE'] = 'Y';
+				}
 
-        }
-        else
-        {
-            foreach (self::GetElements($arProperty["LINK_IBLOCK_ID"], $settings) as $arItem)
-            {
-                $items[$arItem["ID"]] = $arItem["NAME"];
-            }
-        }
+				$rsElements = CIBlockElement::GetList(
+					[],
+					$arFilter,
+					false,
+					false,
+					['ID', 'IBLOCK_ID', 'NAME', 'DETAIL_PAGE_URL']
+				);
+				if (isset($strHTMLControlName['DETAIL_URL']))
+				{
+					$rsElements->SetUrlTemplates($strHTMLControlName['DETAIL_URL']);
+				}
+				$cache[$arValue['VALUE']] = $rsElements->GetNext(true, true);
+			}
 
-        return $items;
-    }
+			if (is_array($cache[$arValue['VALUE']]))
+			{
+				if ($viewMode !== '')
+				{
+					$strResult = $cache[$arValue['VALUE']][$resultKey];
+				}
+				else
+				{
+					$strResult = '<a href="' . $cache[$arValue['VALUE']]['DETAIL_PAGE_URL'] . '">'
+						. $cache[$arValue['VALUE']]['NAME'] . '</a>';
+				}
+			}
+		}
 
-    public static function GetPublicViewHTML($arProperty, $arValue, $strHTMLControlName)
-    {
-        static $cache = array();
+		return $strResult;
+	}
 
-        $strResult = '';
-        $arValue['VALUE'] = intval($arValue['VALUE']);
-        if (0 < $arValue['VALUE'])
-        {
-            $viewMode = '';
-            $resultKey = '';
-            if (!empty($strHTMLControlName['MODE']))
-            {
-                switch ($strHTMLControlName['MODE'])
-                {
-                    case 'CSV_EXPORT':
-                        $viewMode = 'CSV_EXPORT';
-                        $resultKey = 'ID';
-                        break;
-                    case 'EXTERNAL_ID':
-                        $viewMode = 'EXTERNAL_ID';
-                        $resultKey = '~XML_ID';
-                        break;
-                    case 'SIMPLE_TEXT':
-                        $viewMode = 'SIMPLE_TEXT';
-                        $resultKey = '~NAME';
-                        break;
-                    case 'ELEMENT_TEMPLATE':
-                        $viewMode = 'ELEMENT_TEMPLATE';
-                        $resultKey = '~NAME';
-                        break;
-                }
-            }
+	/**
+	 * Данные для умного фильтра.
+	 *
+	 * @return false|array
+	 */
+	public static function GetExtendedValue($arProperty, $value): bool|array
+	{
+		$html = self::GetPublicViewHTML($arProperty, $value, ['MODE' => 'SIMPLE_TEXT']);
+		if ($html !== '')
+		{
+			$text = htmlspecialcharsback($html);
 
-            if (!isset($cache[$arValue['VALUE']]))
-            {
-                $arFilter = [];
-                $intIBlockID = (int)$arProperty['LINK_IBLOCK_ID'];
-                if ($intIBlockID > 0)
-                    $arFilter['IBLOCK_ID'] = $intIBlockID;
-                $arFilter['ID'] = $arValue['VALUE'];
-                if ($viewMode === '')
-                {
-                    $arFilter['ACTIVE'] = 'Y';
-                    $arFilter['ACTIVE_DATE'] = 'Y';
-                    $arFilter['CHECK_PERMISSIONS'] = 'Y';
-                    $arFilter['MIN_PERMISSION'] = 'R';
-                }
-                $rsElements = CIBlockElement::GetList(
-                    array(),
-                    $arFilter,
-                    false,
-                    false,
-                    array("ID","IBLOCK_ID","NAME","DETAIL_PAGE_URL")
-                );
-                if (isset($strHTMLControlName['DETAIL_URL']))
-                {
-                    $rsElements->SetUrlTemplates($strHTMLControlName['DETAIL_URL']);
-                }
-                $cache[$arValue['VALUE']] = $rsElements->GetNext(true, true);
-                unset($rsElements);
-            }
-            if (!empty($cache[$arValue['VALUE']]) && is_array($cache[$arValue['VALUE']]))
-            {
-                if ($viewMode !== '' && $resultKey !== '')
-                {
-                    $strResult = $cache[$arValue['VALUE']][$resultKey];
-                }
-                else
-                {
-                    $strResult = '<a href="'.$cache[$arValue['VALUE']]['DETAIL_PAGE_URL'].'">'.$cache[$arValue['VALUE']]['NAME'].'</a>';
-                }
-            }
-        }
-        return $strResult;
-    }
+			return [
+				'VALUE' => $text,
+				'UF_XML_ID' => $text,
+			];
+		}
 
-    public static function GetOptionsHtml($arProperty, $values, &$bWasSelect): string
-    {
-        $options = "";
-        $settings = self::PrepareSettings($arProperty);
-        $bWasSelect = false;
+		return false;
+	}
 
-        if($settings["group"] === "Y")
-        {
-            $arElements = self::GetElements($arProperty["LINK_IBLOCK_ID"], $settings);
-            $arTree = self::GetSections($arProperty["LINK_IBLOCK_ID"]);
-            foreach($arElements as $i => $arElement)
-            {
-                if(
-                    $arElement["IN_SECTIONS"] == "Y"
-                    && array_key_exists($arElement["IBLOCK_SECTION_ID"], $arTree)
-                )
-                {
-                    $arTree[$arElement["IBLOCK_SECTION_ID"]]["E"][] = $arElement;
-                    unset($arElements[$i]);
-                }
-            }
+	public static function GetUIEntityEditorProperty($settings, $value): array
+	{
+		$items = [];
+		foreach (self::GetElements($settings['LINK_IBLOCK_ID'], $settings) as $element)
+		{
+			$items[] = [
+				'NAME' => $element['NAME'],
+				'VALUE' => $element['ID'],
+				'ID' => $element['ID'],
+			];
+		}
 
-            foreach($arTree as $arSection)
-            {
-                $options .= '<optgroup label="'.str_repeat(" . ", $arSection["DEPTH_LEVEL"]-1).$arSection["NAME"].'">';
-                if(isset($arSection["E"]))
-                {
-                    foreach($arSection["E"] as $arItem)
-                    {
-                        $options .= '<option value="'.$arItem["ID"].'"';
-                        if(in_array($arItem["~ID"], $values))
-                        {
-                            $options .= ' selected';
-                            $bWasSelect = true;
-                        }
-                        $options .= '>'.$arItem["NAME"].'</option>';
-                    }
-                }
-                $options .= '</optgroup>';
-            }
-            foreach($arElements as $arItem)
-            {
-                $options .= '<option value="'.$arItem["ID"].'"';
-                if(in_array($arItem["~ID"], $values))
-                {
-                    $options .= ' selected';
-                    $bWasSelect = true;
-                }
-                $options .= '>'.$arItem["NAME"].'</option>';
-            }
+		return [
+			'type' => ($settings['MULTIPLE'] === 'Y') ? 'multilist' : 'list',
+			'data' => [
+				'isProductProperty' => true,
+				'enableEmptyItem' => true,
+				'items' => $items,
+				'isConfigurable' => false,
+			],
+		];
+	}
 
-        }
-        else
-        {
-            foreach(self::GetElements($arProperty["LINK_IBLOCK_ID"], $settings) as $arItem)
-            {
-                $options .= '<option value="'.$arItem["ID"].'"';
-                if(in_array($arItem["~ID"], $values))
-                {
-                    $options .= ' selected';
-                    $bWasSelect = true;
-                }
-                $options .= '>'.$arItem["NAME"].'</option>';
-            }
-        }
+	/* Внутренние хелперы */
 
-        return  $options;
-    }
+	/**
+	 * Опции <option> для селекта: элементы связанного инфоблока, отфильтрованные
+	 * по текущему пользователю; при group=Y — сгруппированные в <optgroup> по разделам.
+	 */
+	public static function GetOptionsHtml($arProperty, $values, &$bWasSelect): string
+	{
+		$values = array_map('strval', is_array($values) ? $values : []);
+		$bWasSelect = false;
+		$settings = self::PrepareSettings($arProperty);
 
-    /**
-     * Returns data for smart filter.
-     *
-     * @param array $arProperty				Property description.
-     * @param array $value					Current value.
-     * @return false|array
-     */
-    public static function GetExtendedValue($arProperty, $value): bool|array
-    {
-        $html = self::GetPublicViewHTML($arProperty, $value, array('MODE' => 'SIMPLE_TEXT'));
-        if($html <> '')
-        {
-            $text = htmlspecialcharsback($html);
-            return array(
-                'VALUE' => $text,
-                'UF_XML_ID' => $text,
-            );
-        }
-        return false;
-    }
+		$renderOption = function (array $item) use ($values, &$bWasSelect): string {
+			$selected = in_array((string)$item['~ID'], $values, true);
+			$bWasSelect = $bWasSelect || $selected;
 
-    public static function GetElements($IBLOCK_ID, $settings)
-    {
-        static $cache = array();
-        $IBLOCK_ID = intval($IBLOCK_ID);
+			return '<option value="' . $item['ID'] . '"' . ($selected ? ' selected' : '') . '>'
+				. $item['NAME'] . '</option>';
+		};
 
-        if(!array_key_exists($IBLOCK_ID, $cache))
-        {
-            $cache[$IBLOCK_ID] = array();
-            if($IBLOCK_ID > 0)
-            {
-                $arSelect = array(
-                    "ID",
-                    "NAME",
-                    "IN_SECTIONS",
-                    "IBLOCK_SECTION_ID",
-                );
-                $arFilter = array (
-                    "IBLOCK_ID"=> $IBLOCK_ID,
-                    //"ACTIVE" => "Y",
-                    "CHECK_PERMISSIONS" => "Y",
-                );
+		$options = '';
+		if ($settings['group'] === 'Y')
+		{
+			$arElements = self::GetElements($arProperty['LINK_IBLOCK_ID'], $settings);
+			$arTree = self::GetSections($arProperty['LINK_IBLOCK_ID']);
+			foreach ($arElements as $i => $arElement)
+			{
+				if (
+					$arElement['IN_SECTIONS'] === 'Y'
+					&& array_key_exists($arElement['IBLOCK_SECTION_ID'], $arTree)
+				)
+				{
+					$arTree[$arElement['IBLOCK_SECTION_ID']]['E'][] = $arElement;
+					unset($arElements[$i]);
+				}
+			}
 
-                $userField = empty($settings["user_field"]) ? "CREATED_BY" : $settings["user_field"];
-                $arFilter[$userField] = CurrentUser::get()->getId();
+			foreach ($arTree as $arSection)
+			{
+				$options .= '<optgroup label="' . str_repeat(' . ', $arSection['DEPTH_LEVEL'] - 1) . $arSection['NAME'] . '">';
+				if (isset($arSection['E']))
+				{
+					foreach ($arSection['E'] as $arItem)
+					{
+						$options .= $renderOption($arItem);
+					}
+				}
+				$options .= '</optgroup>';
+			}
+		}
 
-                $arOrder = array(
-                    "NAME" => "ASC",
-                    "ID" => "ASC",
-                );
-                $rsItems = CIBlockElement::GetList($arOrder, $arFilter, false, false, $arSelect);
-                while($arItem = $rsItems->GetNext())
-                    $cache[$IBLOCK_ID][] = $arItem;
-            }
-        }
-        return $cache[$IBLOCK_ID];
-    }
+		foreach (self::GetElements($arProperty['LINK_IBLOCK_ID'], $settings) as $arItem)
+		{
+			if (!($settings['group'] === 'Y' && $arItem['IN_SECTIONS'] === 'Y'))
+			{
+				$options .= $renderOption($arItem);
+			}
+		}
 
-    public static function GetSections($IBLOCK_ID)
-    {
-        static $cache = array();
-        $IBLOCK_ID = intval($IBLOCK_ID);
+		return $options;
+	}
 
-        if(!array_key_exists($IBLOCK_ID, $cache))
-        {
-            $cache[$IBLOCK_ID] = array();
-            if($IBLOCK_ID > 0)
-            {
-                $arSelect = array(
-                    "ID",
-                    "NAME",
-                    "DEPTH_LEVEL",
-                );
-                $arFilter = array (
-                    "IBLOCK_ID"=> $IBLOCK_ID,
-                    //"ACTIVE" => "Y",
-                    "CHECK_PERMISSIONS" => "Y",
-                );
-                $arOrder = array(
-                    "LEFT_MARGIN" => "ASC",
-                );
-                $rsItems = CIBlockSection::GetList($arOrder, $arFilter, false, $arSelect);
-                while($arItem = $rsItems->GetNext())
-                    $cache[$IBLOCK_ID][$arItem["ID"]] = $arItem;
-            }
-        }
-        return $cache[$IBLOCK_ID];
-    }
+	private static function getItemsForUiFilter($arProperty): array
+	{
+		$items = [];
+		foreach (self::GetElements($arProperty['LINK_IBLOCK_ID'], self::PrepareSettings($arProperty)) as $arItem)
+		{
+			$items[$arItem['ID']] = $arItem['NAME'];
+		}
 
-    public static function GetUIEntityEditorProperty($settings, $value): array
-    {
-        $items = [];
-        foreach (self::GetElements($settings['LINK_IBLOCK_ID'], $settings) as $element)
-        {
-            $items[] = [
-                'NAME' => $element['NAME'],
-                'VALUE' => $element['ID'],
-                'ID' => $element['ID'],
-            ];
-        }
-        return [
-            'type' => ($settings['MULTIPLE'] === 'Y') ? 'multilist' : 'list',
-            'data' => [
-                'isProductProperty' => true,
-                'enableEmptyItem' => true,
-                'items' => $items,
-                'isConfigurable' => false,
-            ],
-        ];
-    }
+		return $items;
+	}
+
+	private static function getSelectAttributes(array $settings): string
+	{
+		$attributes = '';
+		if ((int)$settings['size'] > 1)
+		{
+			$attributes .= ' size="' . (int)$settings['size'] . '"';
+		}
+		if ((int)$settings['width'] > 0)
+		{
+			$attributes .= ' style="width:' . (int)$settings['width'] . 'px"';
+		}
+
+		return $attributes;
+	}
+
+	/**
+	 * Элементы связанного инфоблока, доступные текущему пользователю.
+	 * Фильтр: поле $settings['user_field'] (по умолчанию CREATED_BY) = ID текущего пользователя.
+	 */
+	public static function GetElements($IBLOCK_ID, $settings)
+	{
+		static $cache = [];
+		$IBLOCK_ID = (int)$IBLOCK_ID;
+
+		if (!array_key_exists($IBLOCK_ID, $cache))
+		{
+			$cache[$IBLOCK_ID] = [];
+			if ($IBLOCK_ID > 0)
+			{
+				$userField = trim((string)($settings['user_field'] ?? ''));
+				if ($userField === '')
+				{
+					$userField = self::DEFAULT_USER_FIELD;
+				}
+
+				$rsItems = CIBlockElement::GetList(
+					['NAME' => 'ASC', 'ID' => 'ASC'],
+					[
+						'IBLOCK_ID' => $IBLOCK_ID,
+						'CHECK_PERMISSIONS' => 'Y',
+						$userField => CurrentUser::get()->getId(),
+					],
+					false,
+					false,
+					['ID', 'NAME', 'IN_SECTIONS', 'IBLOCK_SECTION_ID']
+				);
+				while ($arItem = $rsItems->GetNext())
+				{
+					$cache[$IBLOCK_ID][] = $arItem;
+				}
+			}
+		}
+
+		return $cache[$IBLOCK_ID];
+	}
+
+	public static function GetSections($IBLOCK_ID)
+	{
+		static $cache = [];
+		$IBLOCK_ID = (int)$IBLOCK_ID;
+
+		if (!array_key_exists($IBLOCK_ID, $cache))
+		{
+			$cache[$IBLOCK_ID] = [];
+			if ($IBLOCK_ID > 0)
+			{
+				$rsItems = CIBlockSection::GetList(
+					['LEFT_MARGIN' => 'ASC'],
+					[
+						'IBLOCK_ID' => $IBLOCK_ID,
+						'CHECK_PERMISSIONS' => 'Y',
+					],
+					false,
+					['ID', 'NAME', 'DEPTH_LEVEL']
+				);
+				while ($arItem = $rsItems->GetNext())
+				{
+					$cache[$IBLOCK_ID][$arItem['ID']] = $arItem;
+				}
+			}
+		}
+
+		return $cache[$IBLOCK_ID];
+	}
 }
